@@ -269,7 +269,7 @@ fn theme_style(lua: &Lua, name: String) -> LuaResult<mlua::Value> {
 /// @param lang string Language identifier, e.g. "rust", "python".
 /// @param opts table? Options. Fields:
 ///   - independent (boolean): highlight each line without cross-line context. Default false.
-///   - prefix (string): prepend to the source before highlighting (affects token context). Default "".
+///   - prefix (string): preceding source used as token context. Only the nearest lines fitting within 16 KiB are parsed, so earlier comments or strings may affect coloring. Default "".
 /// @return (table) Lines: `{ { {text, style}, ... }, ... }`. Each style is `{fg, bold?, italic?, underline?}`.
 /// @example
 /// local lines = maki.ui.highlight("fn main() {}", "rust")
@@ -285,14 +285,12 @@ async fn highlight(lua: Lua, code: String, lang: String, opts: Option<Table>) ->
     let prefix = opts
         .and_then(|t| t.get::<String>("prefix").ok())
         .unwrap_or_default();
-    let segments = smol::unblock(move || {
-        maki_highlight::pool::run(move || {
-            if independent {
-                maki_highlight::highlight_lines_independent(&lang, &code)
-            } else {
-                maki_highlight::highlight_code(&lang, &code, &prefix)
-            }
-        })
+    let segments = maki_highlight::pool::run_async(move || {
+        if independent {
+            maki_highlight::highlight_lines_independent(&lang, &code)
+        } else {
+            maki_highlight::highlight_code(&lang, &code, &prefix)
+        }
     })
     .await;
     segments_to_lua_lines(&lua, &segments)
@@ -314,10 +312,8 @@ async fn highlight(lua: Lua, code: String, lang: String, opts: Option<Table>) ->
 /// end
 #[lua_fn]
 async fn markdown(lua: Lua, text: String, width: u16) -> LuaResult<Table> {
-    let lines = smol::unblock(move || {
-        maki_highlight::pool::run(move || maki_markdown::render::render(&text, width))
-    })
-    .await;
+    let lines =
+        maki_highlight::pool::run_async(move || maki_markdown::render::render(&text, width)).await;
     markdown_lines_to_lua(&lua, &lines)
 }
 

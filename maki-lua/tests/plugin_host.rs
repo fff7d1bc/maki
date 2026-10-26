@@ -39,6 +39,17 @@ use rustix::process::{Pid, test_kill_process_group};
 use serde_json::{Value, json};
 
 const BUILTIN_COMMANDS: &[&str] = &["/sessions", "/rename", "/tasks"];
+const BASH_HIGHLIGHT_TIMEOUT_SECS: u64 = 10;
+const BASH_HIGHLIGHT_COMMAND: &str = "printf ready";
+const BASH_HIGHLIGHT_OUTPUT: &str = "ready";
+const BASH_PARKED_HIGHLIGHT_SRC: &str = r#"
+local gate = maki.async.semaphore(1)
+maki.ui.highlight = function()
+    local held = gate:acquire()
+    gate:acquire()
+    held:release()
+end
+"#;
 const NARGS_ERR: &str = r#"'nargs' must be 0, 1, "?", "*", or "+""#;
 const GLOBAL_PACK_ONLY_ERR: &str = "only available in the global init.lua";
 const USAGE_TOOL_NAME: &str = "usage_child";
@@ -5401,6 +5412,34 @@ const BASH_PARTIAL_MARKER_TAIL: &str = ", output above is partial]";
 /// Assembled by printf so the probe never appears in the command header.
 const BASH_PARTIAL_PROBE: &str = "XY";
 const BASH_PARTIAL_CMD: &str = "printf '%s%s\\n' X Y && sleep 30";
+
+#[test_case::test_case(BASH_HIGHLIGHT_COMMAND ; "parked_highlighter")]
+fn bash_finishes_without_waiting_for_highlighting(command: &str) {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_source(
+        "bash",
+        &format!(
+            "{BASH_PARKED_HIGHLIGHT_SRC}\n{}",
+            include_str!("../../plugins/bash/init.lua")
+        ),
+    )
+    .unwrap();
+    let (trigger, token) = CancelToken::new();
+    let mut ctx = maki_agent::tools::test_support::stub_ctx(&AgentMode::Build);
+    ctx.config.rtk = false;
+    ctx.cancel = token;
+
+    let result = exec_with_ctx(
+        &reg,
+        "bash",
+        json!({ "command": command, "timeout": BASH_HIGHLIGHT_TIMEOUT_SECS }),
+        &ctx,
+    );
+    trigger.cancel();
+
+    assert_eq!(result.as_deref(), Ok(BASH_HIGHLIGHT_OUTPUT));
+}
 
 /// Esc mid-stream on a real bash run: the lines printed so far come back as
 /// an error reply ending in the marker, not a bare "cancelled".
